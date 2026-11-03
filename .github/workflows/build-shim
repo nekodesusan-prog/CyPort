@@ -1,0 +1,42 @@
+name: Build libMacShim
+
+# Rebuilds only the CyPort shim (libMacShim.dylib). No game files are needed or used.
+on:
+  workflow_dispatch:
+  push:
+    paths: [ "shim/**", ".github/workflows/build-shim.yml" ]
+
+jobs:
+  shim:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile shim
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "SDK: $SDK"
+          mkdir -p out
+          SWIFTC="$(xcrun -f swiftc)"; TC="$(dirname "$(dirname "$SWIFTC")")"
+          "$SWIFTC" -target arm64-apple-ios16.0 -sdk "$SDK" -O -parse-as-library -emit-object -module-name MacShimUI \
+            -wmo shim/Launcher.swift shim/StoresCore.swift shim/StoresUI.swift shim/GameCloud.swift -o out/Launcher.o
+          xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$SDK" -dynamiclib -fobjc-arc -O2 \
+            -L"$SDK/usr/lib/swift" -L"$TC/lib/swift/iphoneos" -Xlinker -rpath -Xlinker /usr/lib/swift \
+            -install_name @rpath/libMacShim.dylib -compatibility_version 9999.0.0 -current_version 9999.0.0 \
+            -framework Foundation -framework UIKit -framework GameController -framework QuartzCore \
+            -framework Security -framework CoreGraphics -framework CoreFoundation -framework Metal \
+            -framework UniformTypeIdentifiers -framework WebKit -lz \
+            -Wl,-reexport_framework,Foundation -Wl,-reexport_framework,CoreGraphics \
+            -Wl,-reexport_framework,Security -Wl,-reexport_framework,Metal \
+            shim/MacShim.m shim/MacShimC.c shim/StoreCodecs.c shim/third_party/lzma/LzmaDec.c out/Launcher.o \
+            -o out/libMacShim.dylib
+          rm out/Launcher.o
+          # ad-hoc sign so it is a valid Mach-O signature; LiveContainer / your signer re-signs it anyway
+          codesign -f -s - out/libMacShim.dylib
+          file out/libMacShim.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libMacShim
+          path: out/libMacShim.dylib
